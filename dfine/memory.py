@@ -8,14 +8,13 @@ class ReplayBuffer:
     def __init__(
         self,
         capacity: int,
-        observation_dim: int,
-        action_dim: int,
+        y_dim: int,
+        u_dim: int,
     ):
         self.capacity = capacity
 
-        self.observations = np.zeros((capacity, observation_dim), dtype=np.float32)
-        self.actions = np.zeros((capacity, action_dim), dtype=np.float32)
-        self.rewards = np.zeros((capacity, 1), dtype=np.float32)
+        self.ys = np.zeros((capacity, y_dim), dtype=np.float32)
+        self.us = np.zeros((capacity, u_dim), dtype=np.float32)
         self.done = np.zeros((capacity, 1), dtype=bool)
 
         self.index = 0
@@ -26,17 +25,15 @@ class ReplayBuffer:
 
     def push(
         self,
-        observation,
-        action,
-        reward,
+        y,
+        u,
         done,
     ):
         """
             Add experience (single step) to the replay buffer
         """
-        self.observations[self.index] = observation
-        self.actions[self.index] = action
-        self.rewards[self.index] = reward
+        self.ys[self.index] = y
+        self.us[self.index] = u
         self.done[self.index] = done
 
         self.index = (self.index + 1) % self.capacity
@@ -60,17 +57,14 @@ class ReplayBuffer:
             np.arange(start, start + chunk_length) for start in sampled_indexes
         ])
 
-        sampled_observations = self.observations[sampled_ranges].reshape(
-            batch_size, chunk_length, self.observations.shape[1]
+        sampled_ys = self.ys[sampled_ranges].reshape(
+            batch_size, chunk_length, self.ys.shape[1]
         )
-        sampled_actions = self.actions[sampled_ranges].reshape(
-            batch_size, chunk_length, self.actions.shape[1]
-        )
-        sampled_rewards = self.rewards[sampled_ranges].reshape(
-            batch_size, chunk_length, 1
+        sampled_us = self.us[sampled_ranges].reshape(
+            batch_size, chunk_length, self.us.shape[1]
         )
         sampled_done = self.done[sampled_ranges].reshape(
             batch_size, chunk_length, 1
         )
 
-        return sampled_observations, sampled_actions, sampled_rewards, sampled_done
+        return sampled_ys, sampled_us, sampled_done

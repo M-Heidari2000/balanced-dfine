@@ -9,9 +9,9 @@ class Quadratic:
 
     def __init__(self, Q, R, target, device: str="cpu"):
         """
-            Q: s*s
-            R: u*u
-            x_target: 1 * s
+            Q: x x
+            R: u u
+            x_target: 1 x
         """
 
         self.device = device
@@ -20,13 +20,13 @@ class Quadratic:
         self.target = torch.as_tensor(target, device=self.device, dtype=torch.float32)
 
     
-    def __call__(self, state, action):
+    def __call__(self, x, ):
         """
-            state: b * s
-            action: b * a
+            state: b x
+            action: b u
         """
-        state = torch.as_tensor(state, device=self.device, dtype=torch.float32)
-        action = torch.as_tensor(action, device=self.device, dtype=torch.float32)
+        x = torch.as_tensor(x, device=self.device, dtype=torch.float32)
+        u = torch.as_tensor(u, device=self.device, dtype=torch.float32)
 
-        cost = 0.5 * (state - self.target) @ self.Q @ (state - self.target).T + 0.5 * action @ self.R @ action.T
+        cost = 0.5 * (x - self.target) @ self.Q @ (x - self.target).T + 0.5 * u @ self.R @ u.T
         return cost.diag()
