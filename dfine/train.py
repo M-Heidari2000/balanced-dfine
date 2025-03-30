@@ -245,6 +245,6 @@ def train(env: gym.Env, config: TrainConfig):
 
     torch.save(encoder.state_dict(), log_dir / "encoder.pth")
     torch.save(decoder.state_dict(), log_dir / "decoder.pth")
-    torch.save(posterior.state_dict(), log_dir / "posteroir.pth")
+    torch.save(posterior.state_dict(), log_dir / "posterior.pth")
 
     return {"model_dir": log_dir}
