@@ -99,5 +99,5 @@ class LQRAgent:
     
     def reset(self):
         self.step = 0
-        self.mean = torch.zeros((1, self.posterior.state_dim), device=self.device)
-        self.cov = torch.eye(self.posterior.state_dim, device=self.device).unsqueeze(0)
+        self.mean = torch.zeros((1, self.posterior.x_dim), device=self.device)
+        self.cov = torch.eye(self.posterior.x_dim, device=self.device).unsqueeze(0)
