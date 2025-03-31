@@ -86,8 +86,12 @@ class Posterior(nn.Module):
         self._min_var = min_var
 
         # Dynamics matrices
-        self.v = nn.Parameter(torch.randn(1, self.x_dim, device=self.device))
-        self.r = nn.Parameter(torch.randn(1, self.x_dim, device=self.device))
+        self.M = nn.Parameter(
+            torch.eye(self.x_dim, device=self.device)
+        )
+        self.d = nn.Parameter(
+            torch.randn(self.x_dim, device=self.device)
+        )
         self.B = nn.Parameter(
             torch.randn(self.x_dim, self.u_dim, device=self.device),
         )
@@ -106,10 +110,14 @@ class Posterior(nn.Module):
 
     @property
     def A(self):
-        return (
-            torch.eye(self.x_dim, device=self.v.device)
-            + nn.functional.tanh(self.v).T @ nn.functional.tanh(self.r)
-        )
+        # constructing a stable A matrix
+        # softplus ensures positive entries
+        d = nn.functional.softplus(self.d)
+        # QR decomposition to obtain a unitary matrix
+        # why sign correction of the columns?
+        Q, R = torch.linalg.qr(self.M, mode='reduced')
+        Q = Q @ R.diagonal().sign().diag()        
+        return d.sqrt().diag() @ Q @ (1 / (1+d).sqrt()).diag()
 
     def dynamics_update(
         self,

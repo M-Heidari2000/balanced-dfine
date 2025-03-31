@@ -15,6 +15,10 @@ from .models import (
     Decoder,
     Posterior,
 )
+from .control_utils import (
+    solve_discrete_lyapunov,
+    compute_gramians,
+)
 
 
 def train(env: gym.Env, config: TrainConfig):
@@ -169,13 +173,24 @@ def train(env: gym.Env, config: TrainConfig):
 
         y_pred_loss /= config.chunk_length - config.prediction_k - 1
 
+        # balancing loss
+        Wc, Wo = compute_gramians(
+            A=posterior.A,
+            B=posterior.B,
+            C=posterior.C
+        )
+
+        balancing_loss = 1 / torch.trace(Wc @ Wo)
+        total_loss = y_pred_loss + config.balancing_weight * balancing_loss
+
         optimizer.zero_grad()
-        y_pred_loss.backward()
+        total_loss.backward()
         clip_grad_norm_(all_params, config.clip_grad_norm)
         optimizer.step()
 
         writer.add_scalar("y prediction loss train", y_pred_loss.item(), update)
-        print(f"update step: {update+1}, train_loss: {y_pred_loss.item()}")
+        writer.add_scalar("balancing loss train", balancing_loss.item(), update)
+        print(f"update step: {update+1}, train_loss: {total_loss.item()}")
 
         # test
         if update % config.test_interval == 0:
@@ -239,9 +254,19 @@ def train(env: gym.Env, config: TrainConfig):
 
                 y_pred_loss /= config.chunk_length - config.prediction_k - 1
 
-                writer.add_scalar("y prediction loss test", y_pred_loss.item(), update)
-                print(f"update step: {update+1}, test_loss: {y_pred_loss.item()}")
+                # balancing loss
+                Wc, Wo = compute_gramians(
+                    A=posterior.A,
+                    B=posterior.B,
+                    C=posterior.C
+                )
 
+                balancing_loss = 1 / torch.trace(Wc @ Wo)
+                total_loss = y_pred_loss + config.balancing_weight * balancing_loss
+
+                writer.add_scalar("y prediction loss test", y_pred_loss.item(), update)
+                writer.add_scalar("balancing loss test", balancing_loss.item(), update)
+                print(f"update step: {update+1}, test_loss: {total_loss.item()}")
 
     torch.save(encoder.state_dict(), log_dir / "encoder.pth")
     torch.save(decoder.state_dict(), log_dir / "decoder.pth")
