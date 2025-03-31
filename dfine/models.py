@@ -89,6 +89,9 @@ class Posterior(nn.Module):
         self.M = nn.Parameter(
             torch.eye(self.x_dim, device=self.device)
         )
+        self.N = nn.Parameter(
+            torch.eye(self.x_dim, device=self.device)
+        )
         self.d = nn.Parameter(
             torch.randn(self.x_dim, device=self.device)
         )
@@ -115,9 +118,13 @@ class Posterior(nn.Module):
         d = nn.functional.softplus(self.d)
         # QR decomposition to obtain a unitary matrix
         # why sign correction of the columns?
-        Q, R = torch.linalg.qr(self.M, mode='reduced')
-        Q = Q @ R.diagonal().sign().diag()        
-        return d.sqrt().diag() @ Q @ (1 / (1+d).sqrt()).diag()
+        Q, R = torch.linalg.qr(self.M, mode="reduced")
+        Q = Q @ R.diagonal().sign().diag()
+
+        U, R2 = torch.linalg.qr(self.N, mode="reduced")
+        U = U @ R2.diagonal().sign().diag()
+
+        return U @ d.sqrt().diag() @ Q @ (1 / (1+d).sqrt()).diag() @ U.T
 
     def dynamics_update(
         self,
