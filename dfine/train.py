@@ -173,6 +173,12 @@ def train(env: gym.Env, config: TrainConfig):
 
         y_pred_loss /= config.chunk_length - config.prediction_k - 1
 
+        # y reconstruction loss
+        y_flatten = einops.rearrange(y, "l b y -> (l b) y")
+        a_flatten = einops.rearrange(a, "l b a -> (l b) a")
+        y_recon = decoder(a_flatten)
+        y_recon_loss = criterion(y_recon, y_flatten)
+
         # balancing loss
         Wc, Wo = compute_gramians(
             A=posterior.A,
@@ -181,7 +187,7 @@ def train(env: gym.Env, config: TrainConfig):
         )
 
         balancing_loss = 1 / torch.trace(Wc @ Wo)
-        total_loss = y_pred_loss + config.balancing_weight * balancing_loss
+        total_loss = y_pred_loss + config.balancing_weight * balancing_loss + config.reconstruction_weight * y_recon_loss
 
         optimizer.zero_grad()
         total_loss.backward()
@@ -189,6 +195,7 @@ def train(env: gym.Env, config: TrainConfig):
         optimizer.step()
 
         writer.add_scalar("y prediction loss train", y_pred_loss.item(), update)
+        writer.add_scalar("y reconstruction loss train", y_recon_loss.item(), update)
         writer.add_scalar("balancing loss train", balancing_loss.item(), update)
         print(f"update step: {update+1}, train_loss: {total_loss.item()}")
 
@@ -254,6 +261,12 @@ def train(env: gym.Env, config: TrainConfig):
 
                 y_pred_loss /= config.chunk_length - config.prediction_k - 1
 
+                # y reconstruction loss
+                y_flatten = einops.rearrange(y, "l b y -> (l b) y")
+                a_flatten = einops.rearrange(a, "l b a -> (l b) a")
+                y_recon = decoder(a_flatten)
+                y_recon_loss = criterion(y_recon, y_flatten)
+
                 # balancing loss
                 Wc, Wo = compute_gramians(
                     A=posterior.A,
@@ -262,9 +275,10 @@ def train(env: gym.Env, config: TrainConfig):
                 )
 
                 balancing_loss = 1 / torch.trace(Wc @ Wo)
-                total_loss = y_pred_loss + config.balancing_weight * balancing_loss
+                total_loss = y_pred_loss + config.balancing_weight * balancing_loss + config.reconstruction_weight * y_recon_loss
 
                 writer.add_scalar("y prediction loss test", y_pred_loss.item(), update)
+                writer.add_scalar("y reconstruction loss test", y_recon_loss.item(), update)
                 writer.add_scalar("balancing loss test", balancing_loss.item(), update)
                 print(f"update step: {update+1}, test_loss: {total_loss.item()}")
 
