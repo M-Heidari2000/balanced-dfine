@@ -10,9 +10,6 @@ class TrainConfig:
     hidden_dim: int = 32
     min_var: float = 1e-2
     dropout_p: float=0.4
-    buffer_capacity: int = 100000
-    num_train_episodes: int = 100
-    num_test_episodes: int = 10
     test_interval: int = 10
     num_updates: int = 100
     chunk_length: int = 10

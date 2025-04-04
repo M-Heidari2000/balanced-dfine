@@ -15,13 +15,14 @@ from .models import (
     Decoder,
     Posterior,
 )
-from .control_utils import (
-    solve_discrete_lyapunov,
-    compute_gramians,
-)
+from .control_utils import compute_gramians
 
 
-def train(env: gym.Env, config: TrainConfig):
+def train(
+    config: TrainConfig,
+    train_replay_buffer: ReplayBuffer,
+    test_replay_buffer: ReplayBuffer,
+):
 
     # prepare logging
     log_dir = Path(config.log_dir) / datetime.now().strftime("%Y%m%d_%H%M")
@@ -37,31 +38,18 @@ def train(env: gym.Env, config: TrainConfig):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(config.seed)
 
-    # replay buffers
-    train_replay_buffer = ReplayBuffer(
-        capacity=config.buffer_capacity,
-        y_dim=env.observation_space.shape[0],
-        u_dim=env.action_space.shape[0],
-    )
-
-    test_replay_buffer = ReplayBuffer(
-        capacity=config.buffer_capacity,
-        y_dim=env.observation_space.shape[0],
-        u_dim=env.action_space.shape[0],
-    )
-
     # define models and optimizer
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     encoder = Encoder(
-        y_dim=env.observation_space.shape[0],
+        y_dim=train_replay_buffer.y_dim,
         a_dim=config.a_dim,
         hidden_dim=config.hidden_dim,
         dropout_p=config.dropout_p,
     ).to(device)
 
     decoder = Decoder(
-        y_dim=env.observation_space.shape[0],
+        y_dim=train_replay_buffer.y_dim,
         a_dim=config.a_dim,
         hidden_dim=config.hidden_dim,
         dropout_p=config.dropout_p,
@@ -69,7 +57,7 @@ def train(env: gym.Env, config: TrainConfig):
 
     posterior = Posterior(
         x_dim=config.x_dim,
-        u_dim=env.action_space.shape[0],
+        u_dim=train_replay_buffer.u_dim,
         a_dim=config.a_dim,
         device=device,
     ).to(device)
@@ -82,35 +70,6 @@ def train(env: gym.Env, config: TrainConfig):
 
     criterion = torch.nn.MSELoss()
     optimizer = torch.optim.Adam(all_params, lr=config.lr, eps=config.eps)
-
-    # collect training data
-    for _ in range(config.num_train_episodes):
-        obs, _ = env.reset()
-        done = False
-        while not done:
-            action = env.action_space.sample()
-            next_obs, reward, terminated, truncated, _ = env.step(action)
-            done = terminated or truncated
-            train_replay_buffer.push(
-                y=obs,
-                u=action,
-                done=done,
-            )
-            obs = next_obs
-    # collect test data
-    for _ in range(config.num_test_episodes):
-        obs, _ = env.reset()
-        done = False
-        while not done:
-            action = env.action_space.sample()
-            next_obs, reward, terminated, truncated, _ = env.step(action)
-            done = terminated or truncated
-            test_replay_buffer.push(
-                y=obs,
-                u=action,
-                done=done,
-            )
-            obs = next_obs
 
     # train and test loop
     for update in range(config.num_updates):
@@ -152,7 +111,7 @@ def train(env: gym.Env, config: TrainConfig):
             )
 
             # a tensor to hold predictions of future ys
-            pred_y = torch.zeros((config.prediction_k, config.batch_size, env.observation_space.shape[0]), device=device)
+            pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
 
             pred_mean = mean
             pred_cov = cov
@@ -240,7 +199,7 @@ def train(env: gym.Env, config: TrainConfig):
                     )
 
                     # a tensor to hold predictions of future ys
-                    pred_y = torch.zeros((config.prediction_k, config.batch_size, env.observation_space.shape[0]), device=device)
+                    pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
 
                     pred_mean = mean
                     pred_cov = cov

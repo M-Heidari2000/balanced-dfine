@@ -13,6 +13,9 @@ class ReplayBuffer:
     ):
         self.capacity = capacity
 
+        self.y_dim = y_dim
+        self.u_dim = u_dim
+
         self.ys = np.zeros((capacity, y_dim), dtype=np.float32)
         self.us = np.zeros((capacity, u_dim), dtype=np.float32)
         self.done = np.zeros((capacity, 1), dtype=bool)
