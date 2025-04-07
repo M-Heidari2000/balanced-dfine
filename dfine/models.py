@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import monotonicnetworks as lmn
 from typing import Optional
 
 
@@ -62,6 +63,62 @@ class Decoder(nn.Module):
     def forward(self, a):
         return self.mlp_layers(a)
 
+
+class CostModel(nn.Module):
+    """
+        Learnable quadratic cost function in the latent space
+    """
+
+    def __init__(
+        self,
+        x_dim: int,
+        u_dim: int,
+        device: str,
+        hidden_dim: Optional[int]=16,
+    ):
+        
+        super().__init__()
+
+        self.x_dim = x_dim
+        self.u_dim = u_dim
+        
+        self.device = device
+        self.A = nn.Parameter(
+            torch.eye(x_dim, device=self.device, dtype=torch.float32),
+        )
+        self.B = nn.Parameter(
+            torch.eye(u_dim, device=self.device, dtype=torch.float32)
+        )
+
+        # monotonic increasing function
+        self.F = lmn.MonotonicWrapper(
+            nn.Sequential(
+                lmn.LipschitzLinear(1, hidden_dim, kind="one-inf"),
+                lmn.GroupSort(2),
+                lmn.LipschitzLinear(hidden_dim, 1, kind="inf"),
+            ),
+            monotonic_constraints=[1],
+        ).to(device=self.device)
+
+    @property
+    def Q(self):
+        return self.A @ self.A.T
+    
+    @property
+    def R(self):
+        L = torch.tril(self.B)
+        diagonals = nn.functional.softplus(L.diagonal()) + 1e-4
+        X = 1 - torch.eye(self.u_dim, device=self.device, dtype=torch.float32)
+        L = L * X + diagonals.diag()
+        return L @ L.T
+    
+    def forward(self, x, u):
+        # x: b x
+        # u: b u
+        # TODO: use torch.einsum for efficieny
+        cost = 0.5 * x @ self.Q @ x.T + 0.5 * u @ self.R @ u.T
+        return self.F(cost.diagonal().unsqueeze(1))
+        
 
 class Posterior(nn.Module):
     

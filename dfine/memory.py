@@ -18,6 +18,7 @@ class ReplayBuffer:
 
         self.ys = np.zeros((capacity, y_dim), dtype=np.float32)
         self.us = np.zeros((capacity, u_dim), dtype=np.float32)
+        self.cs = np.zeros((capacity, 1), dtype=np.float32)
         self.done = np.zeros((capacity, 1), dtype=bool)
 
         self.index = 0
@@ -30,6 +31,7 @@ class ReplayBuffer:
         self,
         y,
         u,
+        c,
         done,
     ):
         """
@@ -37,6 +39,7 @@ class ReplayBuffer:
         """
         self.ys[self.index] = y
         self.us[self.index] = u
+        self.cs[self.index] = c
         self.done[self.index] = done
 
         self.index = (self.index + 1) % self.capacity
@@ -66,8 +69,11 @@ class ReplayBuffer:
         sampled_us = self.us[sampled_ranges].reshape(
             batch_size, chunk_length, self.us.shape[1]
         )
+        sampled_cs = self.cs[sampled_ranges].reshape(
+            batch_size, chunk_length, 1
+        )
         sampled_done = self.done[sampled_ranges].reshape(
             batch_size, chunk_length, 1
         )
 
-        return sampled_ys, sampled_us, sampled_done
+        return sampled_ys, sampled_us, sampled_cs, sampled_done

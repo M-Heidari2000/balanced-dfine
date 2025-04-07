@@ -20,5 +20,6 @@ class TrainConfig:
     clip_grad_norm: int = 1000
     balancing_weight: float = 1.0
     reconstruction_weight: float = 1.0
+    cost_prediction_weight: float = 1.0
     
     dict = asdict

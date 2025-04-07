@@ -3,7 +3,6 @@ import json
 import torch
 import einops
 import numpy as np
-import gymnasium as gym
 from pathlib import Path
 from datetime import datetime
 from torch.nn.utils import clip_grad_norm_
@@ -14,6 +13,7 @@ from .models import (
     Encoder,
     Decoder,
     Posterior,
+    CostModel,
 )
 from .control_utils import compute_gramians
 
@@ -62,10 +62,17 @@ def train(
         device=device,
     ).to(device)
 
+    cost_model = CostModel(
+        x_dim=config.x_dim,
+        u_dim=train_replay_buffer.u_dim,
+        device=device
+    )
+
     all_params = (
         list(encoder.parameters()) +
         list(decoder.parameters()) + 
-        list(posterior.parameters())
+        list(posterior.parameters()) +
+        list(cost_model.parameters())
     )
 
     criterion = torch.nn.MSELoss()
@@ -78,8 +85,9 @@ def train(
         encoder.train()
         decoder.train()
         posterior.train()
+        cost_model.train()
 
-        y, u, _ = train_replay_buffer.sample(
+        y, u, c, _ = train_replay_buffer.sample(
             batch_size=config.batch_size,
             chunk_length=config.chunk_length,
         )
@@ -91,11 +99,14 @@ def train(
         a = einops.rearrange(a, "(l b) a -> l b a", b=config.batch_size)
         u = torch.as_tensor(u, device=device)
         u = einops.rearrange(u, "b l u -> l b u")
+        c = torch.as_tensor(c, device=device)
+        c = einops.rearrange(c, "b l 1 -> l b 1")
 
         # initial belief over x0: N(0, I)
         mean = torch.zeros((config.batch_size, config.x_dim), device=device)
         cov = torch.eye(config.x_dim, device=device).repeat([config.batch_size, 1, 1])
 
+        c_pred_loss = 0
         y_pred_loss = 0
 
         for t in range(config.chunk_length - config.prediction_k - 1):
@@ -110,13 +121,15 @@ def train(
                 a=a[t+1],
             )
 
-            # a tensor to hold predictions of future ys
+            # tensors to hold predictions of future ys & cs
             pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
+            pred_c = torch.zeros((config.prediction_k, config.batch_size, 1), device=device)
 
             pred_mean = mean
             pred_cov = cov
 
             for k in range(config.prediction_k):
+                pred_c[k] = cost_model(x=pred_mean, u=u[t+k+1])
                 pred_mean, pred_cov = posterior.dynamics_update(
                     mean=pred_mean,
                     cov=pred_cov,
@@ -124,13 +137,19 @@ def train(
                 )
                 pred_y[k] = decoder(pred_mean @ posterior.C.T)
 
-            true_y = y[t+2: t+2+config.prediction_k]
+
+            true_c = c[t+1:t+1+config.prediction_k]
+            true_c_flatten = einops.rearrange(true_c, "k b 1 -> (k b) 1")
+            pred_c_flatten = einops.rearrange(pred_c, "k b 1 -> (k b) 1")
+            c_pred_loss += criterion(pred_c_flatten, true_c_flatten)
+
+            true_y = y[t+2:t+2+config.prediction_k]
             true_y_flatten = einops.rearrange(true_y, "k b y -> (k b) y")
             pred_y_flatten = einops.rearrange(pred_y, "k b y -> (k b) y")
-
             y_pred_loss += criterion(pred_y_flatten, true_y_flatten)
 
-        y_pred_loss /= config.chunk_length - config.prediction_k - 1
+        y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+        c_pred_loss /= (config.chunk_length - config.prediction_k - 1)
 
         # y reconstruction loss
         y_flatten = einops.rearrange(y, "l b y -> (l b) y")
@@ -144,9 +163,14 @@ def train(
             B=posterior.B,
             C=posterior.C
         )
-
         balancing_loss = 1 / torch.trace(Wc @ Wo)
-        total_loss = y_pred_loss + config.balancing_weight * balancing_loss + config.reconstruction_weight * y_recon_loss
+
+        total_loss = (
+            y_pred_loss +
+            config.balancing_weight * balancing_loss +
+            config.reconstruction_weight * y_recon_loss +
+            config.cost_prediction_weight * c_pred_loss
+        )
 
         optimizer.zero_grad()
         total_loss.backward()
@@ -154,6 +178,7 @@ def train(
         optimizer.step()
 
         writer.add_scalar("y prediction loss train", y_pred_loss.item(), update)
+        writer.add_scalar("c prediction loss train", c_pred_loss.item(), update)
         writer.add_scalar("y reconstruction loss train", y_recon_loss.item(), update)
         writer.add_scalar("balancing loss train", balancing_loss.item(), update)
         print(f"update step: {update+1}, train_loss: {total_loss.item()}")
@@ -164,10 +189,11 @@ def train(
             encoder.eval()
             decoder.eval()
             posterior.eval()
+            cost_model.eval()
 
             with torch.no_grad():
 
-                y, u, _ = test_replay_buffer.sample(
+                y, u, c, _ = test_replay_buffer.sample(
                     batch_size=config.batch_size,
                     chunk_length=config.chunk_length,
                 )
@@ -179,11 +205,14 @@ def train(
                 a = einops.rearrange(a, "(l b) a -> l b a", b=config.batch_size)
                 u = torch.as_tensor(u, device=device)
                 u = einops.rearrange(u, "b l u -> l b u")
+                c = torch.as_tensor(c, device=device)
+                c = einops.rearrange(c, "b l 1 -> l b 1")
 
                 # initial belief over x0: N(0, I)
                 mean = torch.zeros((config.batch_size, config.x_dim), device=device)
                 cov = torch.eye(config.x_dim, device=device).repeat([config.batch_size, 1, 1])
 
+                c_pred_loss = 0
                 y_pred_loss = 0
 
                 for t in range(config.chunk_length - config.prediction_k - 1):
@@ -198,13 +227,15 @@ def train(
                         a=a[t+1],
                     )
 
-                    # a tensor to hold predictions of future ys
+                    # tensors to hold predictions of future ys & cs
                     pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
+                    pred_c = torch.zeros((config.prediction_k, config.batch_size, 1), device=device)
 
                     pred_mean = mean
                     pred_cov = cov
 
                     for k in range(config.prediction_k):
+                        pred_c[k] = cost_model(x=pred_mean, u=u[t+k+1])
                         pred_mean, pred_cov = posterior.dynamics_update(
                             mean=pred_mean,
                             cov=pred_cov,
@@ -212,13 +243,18 @@ def train(
                         )
                         pred_y[k] = decoder(pred_mean @ posterior.C.T)
 
+                    true_c = c[t+1:t+1+config.prediction_k]
+                    true_c_flatten = einops.rearrange(true_c, "k b 1 -> (k b) 1")
+                    pred_c_flatten = einops.rearrange(pred_c, "k b 1 -> (k b) 1")
+                    c_pred_loss += criterion(pred_c_flatten, true_c_flatten)
+
                     true_y = y[t+2: t+2+config.prediction_k]
                     true_y_flatten = einops.rearrange(true_y, "k b y -> (k b) y")
                     pred_y_flatten = einops.rearrange(pred_y, "k b y -> (k b) y")
-
                     y_pred_loss += criterion(pred_y_flatten, true_y_flatten)
 
-                y_pred_loss /= config.chunk_length - config.prediction_k - 1
+                y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+                c_pred_loss /= (config.chunk_length - config.prediction_k - 1)
 
                 # y reconstruction loss
                 y_flatten = einops.rearrange(y, "l b y -> (l b) y")
@@ -232,11 +268,17 @@ def train(
                     B=posterior.B,
                     C=posterior.C
                 )
-
                 balancing_loss = 1 / torch.trace(Wc @ Wo)
-                total_loss = y_pred_loss + config.balancing_weight * balancing_loss + config.reconstruction_weight * y_recon_loss
+                
+                total_loss = (
+                    y_pred_loss +
+                    config.balancing_weight * balancing_loss +
+                    config.reconstruction_weight * y_recon_loss +
+                    config.cost_prediction_weight * c_pred_loss
+                )
 
                 writer.add_scalar("y prediction loss test", y_pred_loss.item(), update)
+                writer.add_scalar("c prediction loss test", c_pred_loss.item(), update)
                 writer.add_scalar("y reconstruction loss test", y_recon_loss.item(), update)
                 writer.add_scalar("balancing loss test", balancing_loss.item(), update)
                 print(f"update step: {update+1}, test_loss: {total_loss.item()}")
