@@ -89,13 +89,18 @@ class CostModel(nn.Module):
         self.B = nn.Parameter(
             torch.eye(u_dim, device=self.device, dtype=torch.float32)
         )
+        self.q = nn.Parameter(
+            torch.randn((x_dim, 1), device=self.device, dtype=torch.float32)
+        )
 
         # monotonic increasing function
         self.F = lmn.MonotonicWrapper(
             nn.Sequential(
                 lmn.LipschitzLinear(1, hidden_dim, kind="one-inf"),
                 lmn.GroupSort(2),
-                lmn.LipschitzLinear(hidden_dim, 1, kind="inf"),
+                lmn.LipschitzLinear(hidden_dim, hidden_dim, kind="inf"),
+                lmn.GroupSort(2),
+                lmn.LipschitzLinear(hidden_dim, 1, kind="inf")
             ),
             monotonic_constraints=[1],
         ).to(device=self.device)
@@ -117,7 +122,8 @@ class CostModel(nn.Module):
         # u: b u
         # TODO: use torch.einsum for efficieny
         cost = 0.5 * x @ self.Q @ x.T + 0.5 * u @ self.R @ u.T
-        return self.F(cost.diagonal().unsqueeze(1))
+        cost = cost.diagonal().unsqueeze(1) + x @ self.q
+        return self.F(cost)
         
 
 class Posterior(nn.Module):
