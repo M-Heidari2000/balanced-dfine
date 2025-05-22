@@ -113,6 +113,7 @@ def train(
 
         c_pred_loss = 0
         y_pred_loss = 0
+        a_pred_loss = 0
 
         for t in range(config.chunk_length - config.prediction_k - 1):
             mean, cov = posterior.dynamics_update(
@@ -130,6 +131,7 @@ def train(
 
             # tensors to hold predictions of future ys & cs
             pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
+            pred_a = torch.zeros((config.prediction_k, config.batch_size, config.a_dim), device=device)
             pred_c = torch.zeros((config.prediction_k, config.batch_size, 1), device=device)
 
             pred_mean = mean
@@ -142,6 +144,7 @@ def train(
                     cov=pred_cov,
                     u=u[t+k+1]
                 )
+                pred_a[k] = pred_mean @ posterior.C.T
                 pred_y[k] = decoder(pred_mean @ posterior.C.T)
 
             true_c = c[t+1:t+1+config.prediction_k]
@@ -154,7 +157,14 @@ def train(
             pred_y_flatten = einops.rearrange(pred_y, "k b y -> (k b) y")
             y_pred_loss += criterion(pred_y_flatten, true_y_flatten)
 
+            true_a = a[t+2:t+2+config.prediction_k]
+            true_a_flatten = einops.rearrange(true_a, "k b a -> (k b) a")
+            pred_a_flatten = einops.rearrange(pred_a, "k b a -> (k b) a")
+            a_pred_loss += criterion(pred_a_flatten, true_a_flatten)
+
+
         y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+        a_pred_loss /= (config.chunk_length - config.prediction_k - 1)
         c_pred_loss /= (config.chunk_length - config.prediction_k - 1)
         
         # c reconstruction loss
@@ -182,7 +192,8 @@ def train(
             config.balancing_weight * balancing_loss +
             config.reconstruction_weight * y_recon_loss +
             config.cost_prediction_weight * c_pred_loss +
-            config.cost_reconstruction_weight * c_recon_loss
+            config.cost_reconstruction_weight * c_recon_loss +
+            config.a_prediction_weight * a_pred_loss
         )
 
         optimizer.zero_grad()
@@ -190,11 +201,12 @@ def train(
         clip_grad_norm_(all_params, config.clip_grad_norm)
         optimizer.step()
 
-        writer.add_scalar("y prediction loss train", y_pred_loss.item(), update)
-        writer.add_scalar("c prediction loss train", c_pred_loss.item(), update)
-        writer.add_scalar("y reconstruction loss train", y_recon_loss.item(), update)
-        writer.add_scalar("c reconstruction loss train", c_recon_loss.item(), update)
-        writer.add_scalar("balancing loss train", balancing_loss.item(), update)
+        writer.add_scalar("train/ y prediction loss", y_pred_loss.item(), update)
+        writer.add_scalar("train/ a prediction loss", a_pred_loss.item(), update)
+        writer.add_scalar("train/ c prediction loss", c_pred_loss.item(), update)
+        writer.add_scalar("train/ y reconstruction loss", y_recon_loss.item(), update)
+        writer.add_scalar("train/ c reconstruction loss", c_recon_loss.item(), update)
+        writer.add_scalar("train/ balancing loss", balancing_loss.item(), update)
         print(f"update step: {update+1}, train_loss: {total_loss.item()}")
 
         # test
@@ -233,6 +245,7 @@ def train(
 
                 c_pred_loss = 0
                 y_pred_loss = 0
+                a_pred_loss = 0
 
                 for t in range(config.chunk_length - config.prediction_k - 1):
                     mean, cov = posterior.dynamics_update(
@@ -250,6 +263,7 @@ def train(
 
                     # tensors to hold predictions of future ys & cs
                     pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
+                    pred_a = torch.zeros((config.prediction_k, config.batch_size, config.a_dim), device=device)
                     pred_c = torch.zeros((config.prediction_k, config.batch_size, 1), device=device)
 
                     pred_mean = mean
@@ -262,6 +276,7 @@ def train(
                             cov=pred_cov,
                             u=u[t+k+1]
                         )
+                        pred_a[k] = pred_mean @ posterior.C.T
                         pred_y[k] = decoder(pred_mean @ posterior.C.T)
 
                     true_c = c[t+1:t+1+config.prediction_k]
@@ -274,7 +289,14 @@ def train(
                     pred_y_flatten = einops.rearrange(pred_y, "k b y -> (k b) y")
                     y_pred_loss += criterion(pred_y_flatten, true_y_flatten)
 
+                    true_a = a[t+2: t+2+config.prediction_k]
+                    true_a_flatten = einops.rearrange(true_a, "k b a -> (k b) a")
+                    pred_a_flatten = einops.rearrange(pred_a, "k b a -> (k b) a")
+                    a_pred_loss += criterion(pred_a_flatten, true_a_flatten)
+
+
                 y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+                a_pred_loss /= (config.chunk_length - config.prediction_k - 1)
                 c_pred_loss /= (config.chunk_length - config.prediction_k - 1)
 
                 # c reconstruction loss
@@ -302,14 +324,16 @@ def train(
                     config.balancing_weight * balancing_loss +
                     config.reconstruction_weight * y_recon_loss +
                     config.cost_prediction_weight * c_pred_loss +
-                    config.cost_reconstruction_weight * c_recon_loss
+                    config.cost_reconstruction_weight * c_recon_loss +
+                    config.a_prediction_weight * a_pred_loss
                 )
 
-                writer.add_scalar("y prediction loss test", y_pred_loss.item(), update)
-                writer.add_scalar("c prediction loss test", c_pred_loss.item(), update)
-                writer.add_scalar("y reconstruction loss test", y_recon_loss.item(), update)
-                writer.add_scalar("c reconstruction loss test", c_recon_loss.item(), update)
-                writer.add_scalar("balancing loss test", balancing_loss.item(), update)
+                writer.add_scalar("test/ y prediction loss", y_pred_loss.item(), update)
+                writer.add_scalar("test/ a prediction loss", a_pred_loss.item(), update)
+                writer.add_scalar("test/ c prediction loss", c_pred_loss.item(), update)
+                writer.add_scalar("test/ y reconstruction loss", y_recon_loss.item(), update)
+                writer.add_scalar("test/ c reconstruction loss", c_recon_loss.item(), update)
+                writer.add_scalar("test/ balancing loss", balancing_loss.item(), update)
                 print(f"update step: {update+1}, test_loss: {total_loss.item()}")
 
     torch.save(encoder.state_dict(), log_dir / "encoder.pth")
