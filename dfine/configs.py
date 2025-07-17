@@ -18,10 +18,6 @@ class TrainConfig:
     lr: float = 1e-3
     eps: float = 1e-8
     clip_grad_norm: int = 1000
-    balancing_weight: float = 0.0
-    reconstruction_weight: float = 0.0
-    cost_prediction_weight: float = 0.0
-    cost_reconstruction_weight: float = 0.0
-    a_prediction_weight: float = 0.0
+    reconstruction_weight: float = 1.0
     
     dict = asdict
