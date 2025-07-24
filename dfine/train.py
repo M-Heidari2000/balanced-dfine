@@ -16,6 +16,9 @@ from .models import (
     Posterior,
     CostModel,
 )
+from torch.distributions.kl import kl_divergence
+from torch.distributions import MultivariateNormal
+
 
 def train_backbone(
     config: TrainConfig,
@@ -94,7 +97,8 @@ def train_backbone(
         mean = torch.zeros((config.batch_size, config.x_dim), device=device)
         cov = torch.eye(config.x_dim, device=device).repeat([config.batch_size, 1, 1])
 
-        y_pred_loss = 0
+        y_pred_loss = 0.0
+        kl_loss = 0.0
 
         for t in range(config.chunk_length - config.prediction_k - 1):
             mean, cov = posterior.dynamics_update(
@@ -102,11 +106,14 @@ def train_backbone(
                 cov=cov,
                 u=u[t],
             )
+            prediction_dist = MultivariateNormal(loc=mean, covariance_matrix=cov)
             mean, cov = posterior.measurement_update(
                 mean=mean,
                 cov=cov,
                 a=a[t+1],
             )
+            update_dist = MultivariateNormal(loc=mean, covariance_matrix=cov)
+            kl_loss += kl_divergence(update_dist, prediction_dist).clamp(min=config.free_nats).mean()
 
             # tensors to hold predictions of future ys
             pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
@@ -127,6 +134,7 @@ def train_backbone(
             y_pred_loss += nn.MSELoss()(pred_y_flatten, true_y_flatten)
 
         y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+        kl_loss /= (config.chunk_length - config.prediction_k - 1)
         
         # y reconstruction loss
         y_flatten = einops.rearrange(y, "l b y -> (l b) y")
@@ -134,15 +142,20 @@ def train_backbone(
         y_recon = decoder(a_flatten)
         y_recon_loss = nn.MSELoss()(y_recon, y_flatten)
 
-        total_loss = y_pred_loss + config.reconstruction_weight * y_recon_loss
+        total_loss = (
+            y_pred_loss +
+            config.reconstruction_weight * y_recon_loss +
+            config.kl_beta * kl_loss
+        )
 
         optimizer.zero_grad()
         total_loss.backward()
         clip_grad_norm_(all_params, config.clip_grad_norm)
         optimizer.step()
 
-        writer.add_scalar("train/ y prediction loss", y_pred_loss.item(), update)
-        writer.add_scalar("train/ y reconstruction loss", y_recon_loss.item(), update)
+        writer.add_scalar("train/y prediction loss", y_pred_loss.item(), update)
+        writer.add_scalar("train/y reconstruction loss", y_recon_loss.item(), update)
+        writer.add_scalar("train/kl loss", kl_loss.item(), update)
         print(f"update step: {update+1}, train_loss: {total_loss.item()}")
 
         # test
@@ -152,71 +165,78 @@ def train_backbone(
             decoder.eval()
             posterior.eval()
 
-            with torch.no_grad():
+            y, u, c, _ = test_replay_buffer.sample(
+                batch_size=config.batch_size,
+                chunk_length=config.chunk_length,
+            )
 
-                y, u, c, _ = test_replay_buffer.sample(
-                    batch_size=config.batch_size,
-                    chunk_length=config.chunk_length,
+            # convert to tensor, transform to device, reshape to time-first
+            y = torch.as_tensor(y, device=device)
+            y = einops.rearrange(y, "b l y -> l b y")
+            a = encoder(einops.rearrange(y, "l b y -> (l b) y"))
+            a = einops.rearrange(a, "(l b) a -> l b a", b=config.batch_size)
+            u = torch.as_tensor(u, device=device)
+            u = einops.rearrange(u, "b l u -> l b u")
+
+            # initial belief over x0: N(0, I)
+            mean = torch.zeros((config.batch_size, config.x_dim), device=device)
+            cov = torch.eye(config.x_dim, device=device).repeat([config.batch_size, 1, 1])
+
+            y_pred_loss = 0.0
+            kl_loss = 0.0
+
+            for t in range(config.chunk_length - config.prediction_k - 1):
+                mean, cov = posterior.dynamics_update(
+                    mean=mean,
+                    cov=cov,
+                    u=u[t],
                 )
+                prediction_dist = MultivariateNormal(loc=mean, covariance_matrix=cov)
+                mean, cov = posterior.measurement_update(
+                    mean=mean,
+                    cov=cov,
+                    a=a[t+1],
+                )
+                update_dist = MultivariateNormal(loc=mean, covariance_matrix=cov)
+                kl_loss += kl_divergence(update_dist, prediction_dist).clamp(min=config.free_nats).mean()
 
-                # convert to tensor, transform to device, reshape to time-first
-                y = torch.as_tensor(y, device=device)
-                y = einops.rearrange(y, "b l y -> l b y")
-                a = encoder(einops.rearrange(y, "l b y -> (l b) y"))
-                a = einops.rearrange(a, "(l b) a -> l b a", b=config.batch_size)
-                u = torch.as_tensor(u, device=device)
-                u = einops.rearrange(u, "b l u -> l b u")
+                # tensors to hold predictions of future ys
+                pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
+                pred_mean = mean
+                pred_cov = cov
 
-                # initial belief over x0: N(0, I)
-                mean = torch.zeros((config.batch_size, config.x_dim), device=device)
-                cov = torch.eye(config.x_dim, device=device).repeat([config.batch_size, 1, 1])
-
-                y_pred_loss = 0
-
-                for t in range(config.chunk_length - config.prediction_k - 1):
-                    mean, cov = posterior.dynamics_update(
-                        mean=mean,
-                        cov=cov,
-                        u=u[t],
+                for k in range(config.prediction_k):
+                    pred_mean, pred_cov = posterior.dynamics_update(
+                        mean=pred_mean,
+                        cov=pred_cov,
+                        u=u[t+k+1]
                     )
-                    mean, cov = posterior.measurement_update(
-                        mean=mean,
-                        cov=cov,
-                        a=a[t+1],
-                    )
+                    pred_y[k] = decoder(pred_mean @ posterior.C.T)
 
-                    # tensors to hold predictions of future ys
-                    pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
+                true_y = y[t+2:t+2+config.prediction_k]
+                true_y_flatten = einops.rearrange(true_y, "k b y -> (k b) y")
+                pred_y_flatten = einops.rearrange(pred_y, "k b y -> (k b) y")
+                y_pred_loss += nn.MSELoss()(pred_y_flatten, true_y_flatten)
 
-                    pred_mean = mean
-                    pred_cov = cov
+            y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+            kl_loss /= (config.chunk_length - config.prediction_k - 1)
+            
+            # y reconstruction loss
+            y_flatten = einops.rearrange(y, "l b y -> (l b) y")
+            a_flatten = einops.rearrange(a, "l b a -> (l b) a")
+            y_recon = decoder(a_flatten)
+            y_recon_loss = nn.MSELoss()(y_recon, y_flatten)
 
-                    for k in range(config.prediction_k):
-                        pred_mean, pred_cov = posterior.dynamics_update(
-                            mean=pred_mean,
-                            cov=pred_cov,
-                            u=u[t+k+1]
-                        )
-                        pred_y[k] = decoder(pred_mean @ posterior.C.T)
+            total_loss = (
+                y_pred_loss +
+                config.reconstruction_weight * y_recon_loss +
+                config.kl_beta * kl_loss
+            )
 
-                    true_y = y[t+2: t+2+config.prediction_k]
-                    true_y_flatten = einops.rearrange(true_y, "k b y -> (k b) y")
-                    pred_y_flatten = einops.rearrange(pred_y, "k b y -> (k b) y")
-                    y_pred_loss += nn.MSELoss()(pred_y_flatten, true_y_flatten)
-
-                y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
-
-                # y reconstruction loss
-                y_flatten = einops.rearrange(y, "l b y -> (l b) y")
-                a_flatten = einops.rearrange(a, "l b a -> (l b) a")
-                y_recon = decoder(a_flatten)
-                y_recon_loss = nn.MSELoss()(y_recon, y_flatten)
-                
-                total_loss = y_pred_loss + config.reconstruction_weight * y_recon_loss
-
-                writer.add_scalar("test/ y prediction loss", y_pred_loss.item(), update)
-                writer.add_scalar("test/ y reconstruction loss", y_recon_loss.item(), update)
-                print(f"update step: {update+1}, test_loss: {total_loss.item()}")
+            writer.add_scalar("test/y prediction loss", y_pred_loss.item(), update)
+            writer.add_scalar("test/y reconstruction loss", y_recon_loss.item(), update)
+            writer.add_scalar("test/kl loss", kl_loss.item(), update)
+            print(f"test step: {update+1}, test_loss: {total_loss.item()}")
 
     torch.save(encoder.state_dict(), log_dir / "encoder.pth")
     torch.save(decoder.state_dict(), log_dir / "decoder.pth")
