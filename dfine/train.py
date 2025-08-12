@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.tensorboard.writer import SummaryWriter
+from .control_utils import compute_gramians
 from .memory import ReplayBuffer
 from .configs import TrainConfig
 from .models import (
@@ -134,15 +135,34 @@ def train_backbone(
         y_recon = decoder(a_flatten)
         y_recon_loss = nn.MSELoss()(y_recon, y_flatten)
 
-        total_loss = y_pred_loss + config.reconstruction_weight * y_recon_loss
+        # balancing loss
+        Wc, Wo = compute_gramians(
+            A=posterior.A,
+            B=posterior.B,
+            C=posterior.C
+        )
+
+        balancing_loss = 1 / torch.trace(Wc @ Wo)
+
+        total_loss = (
+            y_pred_loss +
+            config.reconstruction_weight * y_recon_loss +
+            config.balancing_weight * balancing_loss
+        )
 
         optimizer.zero_grad()
         total_loss.backward()
+
+        for name, param in posterior.named_parameters():
+            print(f"{name}: {param.grad}")
+        print("="*100)
+
         clip_grad_norm_(all_params, config.clip_grad_norm)
         optimizer.step()
 
         writer.add_scalar("train/ y prediction loss", y_pred_loss.item(), update)
         writer.add_scalar("train/ y reconstruction loss", y_recon_loss.item(), update)
+        writer.add_scalar("train/ balancing loss", balancing_loss.item(), update)
         print(f"update step: {update+1}, train_loss: {total_loss.item()}")
 
         # test
@@ -212,11 +232,25 @@ def train_backbone(
                 y_recon = decoder(a_flatten)
                 y_recon_loss = nn.MSELoss()(y_recon, y_flatten)
                 
-                total_loss = y_pred_loss + config.reconstruction_weight * y_recon_loss
+                # balancing loss
+                Wc, Wo = compute_gramians(
+                    A=posterior.A,
+                    B=posterior.B,
+                    C=posterior.C
+                )
+
+                balancing_loss = 1 / torch.trace(Wc @ Wo)
+
+                total_loss = (
+                    y_pred_loss +
+                    config.reconstruction_weight * y_recon_loss +
+                    config.balancing_weight * balancing_loss
+                )
 
                 writer.add_scalar("test/ y prediction loss", y_pred_loss.item(), update)
                 writer.add_scalar("test/ y reconstruction loss", y_recon_loss.item(), update)
-                print(f"update step: {update+1}, test_loss: {total_loss.item()}")
+                writer.add_scalar("test/ balancing loss", balancing_loss.item(), update)
+                print(f"test step: {update+1}, test_loss: {total_loss.item()}")
 
     torch.save(encoder.state_dict(), log_dir / "encoder.pth")
     torch.save(decoder.state_dict(), log_dir / "decoder.pth")
@@ -345,6 +379,12 @@ def train_cost(
 
         optimizer.zero_grad()
         total_loss.backward()
+        
+        print(f"A: {cost_model.A.grad}")
+        print(f"B: {cost_model.B.grad}")
+        print(f"q: {cost_model.q.grad}")
+        print("="*100)
+        
         clip_grad_norm_(all_params, config.clip_grad_norm)
         optimizer.step()
 
