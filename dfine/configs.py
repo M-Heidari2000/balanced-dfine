@@ -17,6 +17,7 @@ class TrainConfig:
     prediction_k: int = 4
     batch_size: int = 64
     lr: float = 1e-3
+    cost_lr: float = 1e-3
     eps: float = 1e-8
     clip_grad_norm: int = 1000
     reconstruction_weight: float = 1.0
