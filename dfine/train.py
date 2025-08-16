@@ -305,7 +305,8 @@ def train_cost(
     cost_model = CostModel(
         x_dim=config.x_dim,
         u_dim=train_replay_buffer.u_dim,
-        device=device
+        device=device,
+        hidden_dim=config.hidden_dim,
     )
 
     # load the backbone
