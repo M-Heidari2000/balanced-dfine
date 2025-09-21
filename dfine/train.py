@@ -235,7 +235,7 @@ def train(
                 done = False
                 total_reward = 0.0
                 while not done:
-                    planned_actions = agent(y=obs, u=action, explore=True)
+                    planned_actions = agent(y=obs, u=action, explore=False)
                     action = planned_actions[0]
                     next_obs, reward, terminated, truncated, _ = env.step(action=action)
                     done = terminated or truncated
